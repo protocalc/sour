@@ -6,6 +6,7 @@ import os
 import io
 import json
 import datetime
+import math
 
 from fractions import Fraction
 import decimal
@@ -818,7 +819,14 @@ class SONYconn:
         with open(file_path+file_name, 'w') as j:
             json.dump(self.camera_properties, j)
     
-    def messageHandler(self, command, value):
+    def messageHandler(self, msg):
+
+        command = copy.copy(msg[0])
+
+        if len(msg) == 2:
+            value = copy.copy(msg[1])
+        else:
+            value = copy.copy(msg[1:])
 
         cmd = command.strip().lower().replace(' ', '')
 
@@ -839,9 +847,29 @@ class SONYconn:
 
         elif cmd == 'capture':
             out = self._capture_photo()
+        
+        elif cmd == 'datetime':
+            out = self._set_datetime(value[0], value[1])
+
+        elif cmd == 'focusdistance':
+            if isinstance(value, str):
+                if value.lower().strip() == 'infinity':
+                    out = self._set_focus_infinity()
+
+            elif isinstance(value, list):
+                if value[0].lower().strip() == 'further':
+                    flag = True
+                else:
+                    flag = False
+
+                out = self._set_focus_distance(value[1], flag)
 
         return out
     
+    '''
+    List of Fuctions used to send commands to the camera
+    '''
+
     def _capture_photo(self):
 
         capture = {
@@ -1194,6 +1222,7 @@ class SONYconn:
             self._OPCODES['Values']['SetControlDeviceA'],
             params=params,
             data=mode_dict,
+            transaction=self.transactionID
             )
 
         resp = self.connection._decode_msg(PTPmsg)
@@ -1257,6 +1286,161 @@ class SONYconn:
         self.transactionID += 1
 
         return img
+    
+    def _set_datetime(self, timeout = 0.04, delta = 1e-3):
+
+        params = {
+            'Msg' : {
+                'Value': self._PROPCODES['Values']['DateTime'],
+                'DataType': self._PROPCODES['DataType']
+            }
+        }
+
+        cmdMsg = self.connection._PTPMsg(
+            USBcodes.USB_OPERATIONS['Command'],
+            self._OPCODES['Values']['SetControlDeviceA'],
+            params,
+            transaction=self.transactionID
+            )
+        
+        cmdMsg = self.connection._encode_msg(cmdMsg)
+
+        msgData_length = struct.pack('<L', 61)
+
+        msgType = struct.pack('<H', USBcodes.USB_OPERATIONS['Data'])
+        msgCode = struct.pack('<H', self._OPCODES['Values']['SetControlDeviceA'])
+        msgTrans = struct.pack('<L', self.transactionID)
+        msgDate_Length = struct.pack('<B', 48)
+
+        dataMsg = (
+            msgData_length
+            + msgType
+            + msgCode
+            + msgTrans
+            + msgDate_Length
+        )
+
+        count = 0
+
+        _ = self.connection._send(cmdMsg)
+        while True:
+            t = time.time()
+            time.sleep(math.ceil(t)-t)
+            if abs(time.time()-math.floor(t))-1 < delta:
+                timing = time.time()
+                _ = self.connection._send(
+                    dataMsg
+                    + datetime.datetime.fromtimestamp(math.ceil(t)).astimezone().strftime("%Y%m%dT%H%M%S.0%z").encode('utf-16LE')+b'\x00\x00\x00\x00'
+                    )
+                break
+            count += 1
+            if count == 10:
+                delta *= 2
+        
+
+        time.sleep(timeout)
+
+        PTPmsgIn = self.connection._receive()
+
+        resp = self.connection._decode_msg(PTPmsgIn)
+
+        self.transactionID += 1
+
+        if resp['MsgType'] == 'Response':
+            if resp['RespCode'] == 'OK':
+                logger.info(f'Set camera DateTime to {datetime.datetime.fromtimestamp(math.ceil(t)).astimezone().strftime("%Y-%m-%d %H:%M:%S.%f")}')
+                logger.info(f'Loop accuracy for Timing: {delta*1000} ms')
+                logger.info(f'Command Sent at {datetime.datetime.fromtimestamp(timing).astimezone().strftime("%Y-%m-%d %H:%M:%S.%f")}')
+                logger.info(f'Predicted Accuracy: {(timing-math.ceil(t)+delta)*1000} ms')
+
+                time.sleep(0.5)
+
+                return True
+
+        time.sleep(0.5)
+        
+        return False
+        
+    def __single_step_focus_distance(self, further=True):
+
+        if further:
+            value = 1
+            focus_step = 'further'
+        else:
+            value = -1
+            focus_step = 'closer'
+
+        params = {
+            'Msg' : {
+                'Value': self._PROPCODES['Values']['FocusDistance'],
+                'DataType': self._PROPCODES['DataType']
+            }
+        }
+
+        mode = {
+            'Msg' : {
+                'Value': value,
+                'DataType': 'h'
+            }
+        }
+
+        PTPmsg = self.connection.send_recv_Msg(
+            USBcodes.USB_OPERATIONS['Command'],
+            self._OPCODES['Values']['SetControlDeviceB'],
+            params=params,
+            data=mode,
+            transaction=self.transactionID
+            )
+
+        resp = self.connection._decode_msg(PTPmsg)
+
+        self.transactionID += 1
+
+        if resp['MsgType'] == 'Response':
+            if resp['RespCode'] == 'OK':
+                
+                logger.info(f'Moved focus by a single step {focus_step}')
+
+                return True
+        
+        return False
+    
+    def _set_focus_distance(self, nstep, further=True):
+
+        resp = []
+
+        for _ in range(nstep):
+            resp.append(self.__single_step_focus_distance(further))
+            time.sleep(0.2)
+        
+        if all(resp):
+            if further:
+                logger.info(f'Set Focus further by {nstep}')
+            else:
+                logger.info(f'Set Focus closer by {nstep}')
+            
+            return True
+        else:
+            logger.info('Cannot Set Focus Distance')
+            return False
+
+    def _set_focus_infinity(self):
+
+        self.get_camera_properties()
+
+        current_distance = self.camera_properties['ManualFocusDistance']['CurrentValue']
+
+        nstep = 100-current_distance
+
+        r = self._set_focus_distance(nstep)
+
+        if r:
+            logger.info('Set focus distance to infinity')
+
+            return True
+
+        return False
+
     
     def _transfer_large_files(self, file_name, file_code, file_download_code, chunk_size = 15*1e3*2**10):
 
@@ -1329,7 +1513,6 @@ class SONYconn:
             self.transactionID += 1
 
             if resp['Payload'] == download_code:
-                print('Finished Transfer')
                 logger.info(f'Downloaded File {file_name}')
                 break
 

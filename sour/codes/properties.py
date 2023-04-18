@@ -61,7 +61,8 @@ SONY_PROPCODE = {
         'FileFormat'                        : 0xD253,
         'MovieFormat'                       : 0xD241,
         'MovieSetting'                      : 0xD242,
-        'DateTime'                          : 0xD223
+        'DateTime'                          : 0xD223,
+        'ManualFocusDistance'               : 0xD24C
         }
 }
 

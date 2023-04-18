@@ -70,6 +70,17 @@ class RemoteTab(QtWidgets.QWidget):
         
         self.shutter_speed_available_label = QtWidgets.QLabel('Shutter Speed')
         self.shutter_speed_available = QtWidgets.QComboBox()
+
+        self.focus_distance_label = QtWidgets.QLabel('Focus Distance')
+
+        self.focus_distance_available = QtWidgets.QComboBox()
+        self.focus_distance_available.addItems(['Further', 'Closer'])
+
+        self.focus_distance_step = QtWidgets.QLineEdit('# Steps')
+        self.focus_command = QtWidgets.QPushButton('Send Focus Control')
+
+        self.focus_distance_infinity_label = QtWidgets.QLabel('Focus to Infinity')
+        self.focus_distance_infinity = QtWidgets.QCheckBox()
         
         layout.addWidget(self.program_available_label, 0, 0)
         layout.addWidget(self.program_available, 0, 1)
@@ -83,6 +94,19 @@ class RemoteTab(QtWidgets.QWidget):
         layout.addWidget(self.shutter_speed_available_label, 3, 0)
         layout.addWidget(self.shutter_speed_available, 3, 1)
 
+        layout.addWidget(self.focus_distance_label, 4, 0)
+        layout.addWidget(self.focus_distance_available, 4, 1)
+        layout.addWidget(self.focus_distance_step, 4, 2)
+        layout.addWidget(self.focus_command, 4, 3)
+
+        layout.addWidget(self.focus_distance_infinity_label, 5, 1)
+        layout.addWidget(self.focus_distance_infinity, 5, 2)
+
+        self.focus_distance_available.setEnabled(False)
+        self.focus_distance_step.setEnabled(False)
+        self.focus_distance_infinity.setEnabled(False)
+        self.focus_command.setEnabled(False)
+
         self.camera_connected_signal.connect(self.update_values)
         self.camera_connected_signal.connect(self.start_messaging_thread)
 
@@ -90,6 +114,10 @@ class RemoteTab(QtWidgets.QWidget):
         self.focus_modes_available.activated[str].connect(self.update_focus_mode)
         self.iso_available.activated[str].connect(self.update_iso)
         self.program_available.activated[str].connect(self.update_program_mode)
+
+        self.focus_distance_infinity.toggled.connect(self.update_focus_distance_infinity)
+
+        self.focus_command.clicked.connect(self.update_focus_distance)
 
         self.CameraParams.setLayout(layout)
 
@@ -136,6 +164,12 @@ class RemoteTab(QtWidgets.QWidget):
         self.program_available.setCurrentText(props['ExposureProgramMode']['CurrentValue'])
         self.focus_modes_available.setCurrentText(props['FocusMode']['CurrentValue'])
 
+        if props['FocusMode']['CurrentValue'] == 'MF':
+            self.focus_distance_available.setEnabled(True)
+            self.focus_distance_step.setEnabled(True)
+            self.focus_distance_infinity.setEnabled(True)
+            self.focus_command.setEnabled(True)
+
 
         if self.camera_connected:
             if self.camera_mode != 'RemoteControl':
@@ -144,6 +178,11 @@ class RemoteTab(QtWidgets.QWidget):
                 self.focus_modes_available.setEnabled(False)
                 self.iso_available.setEnabled(False)
                 self.shutter_speed_available.setEnabled(False)
+
+                self.focus_distance_available.setEnabled(False)
+                self.focus_distance_step.setEnabled(False)
+                self.focus_distance_infinity.setEnabled(False)
+                self.focus_command.setEnabled(False)
     
     @QtCore.pyqtSlot(bool)
     def start_messaging_thread(self, cam_conn):
@@ -191,6 +230,17 @@ class RemoteTab(QtWidgets.QWidget):
     def update_focus_mode(self):
         if self.camera_connected:
             cmd = ['Focus Mode', self.focus_modes_available.currentText()]
+
+            if cmd[1] == 'MF':
+                self.focus_distance_available.setEnabled(True)
+                self.focus_distance_step.setEnabled(True)
+                self.focus_distance_infinity.setEnabled(True)
+                self.focus_command.setEnabled(True)
+            else:
+                self.focus_distance_available.setEnabled(False)
+                self.focus_distance_step.setEnabled(False)
+                self.focus_distance_infinity.setEnabled(False)
+                self.focus_command.setEnabled(False)
             
             worker = Queuer(
                 cmd,
@@ -216,13 +266,55 @@ class RemoteTab(QtWidgets.QWidget):
             worker.signals.started.connect(self.start)
             self.threadpool.start(worker)
     
-    def complete(self, n):
-        print('Completed')
-        print(n)
+    def update_focus_distance(self):
 
-    def start(self, n):
-        print('Started')
-        print(n)
+        if self.camera_connected:
+            cmd = [
+                'Focus Distance',
+                self.focus_distance_available.currentText(),
+                int(self.focus_distance_step.text()),
+            ]
+
+            worker = Queuer(
+                cmd,
+                self.camera_queue,
+                0.05
+            )
+
+            worker.signals.completed.connect(self.complete)
+            worker.signals.started.connect(self.start)
+            self.threadpool.start(worker)
+    
+    def update_focus_distance_infinity(self):
+
+        if self.camera_connected:
+            if self.focus_distance_infinity.isChecked():
+                self.focus_distance_available.setEnabled(False)
+                self.focus_distance_step.setEnabled(False)
+                self.focus_command.setEnabled(False)
+
+                cmd = ['Focus Distance', 'Infinity']
+
+                worker = Queuer(
+                    cmd,
+                    self.camera_queue,
+                    0.05
+                )
+
+                worker.signals.completed.connect(self.complete)
+                worker.signals.started.connect(self.start)
+                self.threadpool.start(worker)
+
+            else:
+                self.focus_distance_available.setEnabled(True)
+                self.focus_distance_step.setEnabled(True)
+                self.focus_command.setEnabled(True)
+
+    def complete(self):
+        print('Added cmd to the Queue')
+
+    def start(self):
+        print('Adding cmd to the Queue')
     
     def talker(self):
 
@@ -239,7 +331,28 @@ class RemoteTab(QtWidgets.QWidget):
 
         self.msg_worker.image.connect(self.update_image)
 
+        self.msg_worker.cmd_start.connect(self.cmd_dialog)
+        self.msg_worker.cmd_end.connect(self.close_dialog)
+
         self.msg_thread.start()
+
+    @QtCore.pyqtSlot(list)
+    def cmd_dialog(self, msg):
+        
+        flag = copy.copy(msg[0])
+        param = copy.copy(msg[1])
+
+        if flag:
+            self.dialog = CommandStatus(param)
+            self.dialog.exec_()
+
+    @QtCore.pyqtSlot(bool)
+    def close_dialog(self, flag):
+        flag = copy.copy(flag)
+        print('Test', flag)
+        if flag:
+            if hasattr(self, 'dialog'):
+                self.dialog.close()
 
     def _interrupt_thread(self):
 
@@ -342,11 +455,13 @@ class RemoteTab(QtWidgets.QWidget):
         self.LiveViewButtonUPDATE.clicked.connect(self.LVworker.update)
 
         self.threadpool.start(self.LVworker)
-            
+
 class Sender(QtCore.QObject):
 
     finished = QtCore.pyqtSignal()
     image = QtCore.pyqtSignal(np.ndarray)
+    cmd_start = QtCore.pyqtSignal(list)
+    cmd_end = QtCore.pyqtSignal(bool)
 
     def __init__(self, camera_queue, camera_obj, parent=None):
         super().__init__()
@@ -360,14 +475,19 @@ class Sender(QtCore.QObject):
         while self._running:
             while not self.queue.empty():
                 msg = self.queue.get()
+
+                if msg[0] != 'IMAGE':
+                    self.cmd_start.emit([True, msg[0]])
                 
-                out = self.camera.messageHandler(msg[0], msg[1])
+                out = self.camera.messageHandler(msg)
 
                 if msg[0] == 'IMAGE':
                     try:
                         self.image.emit(out)
                     except RuntimeError:
                         pass
+                else:
+                    self.cmd_end.emit(out)
         
         try:
             self.finished.emit()
@@ -377,6 +497,21 @@ class Sender(QtCore.QObject):
     def stop(self):
         self.finished.emit()
         self._running = False
+
+class CommandStatus(QtWidgets.QDialog):
+
+    def __init__(self, msg, parent=None):
+
+        super(QtWidgets.QDialog, self).__init__(parent)
+
+
+        self.label = QtWidgets.QLabel(f'Sending {msg} command')
+
+        layout = QtWidgets.QGridLayout()
+
+        layout.addWidget(self.label, 0, 0)
+
+        self.setLayout(layout)
 
 class Signals(QtCore.QObject):
 

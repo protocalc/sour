@@ -369,13 +369,16 @@ class USBconn:
         
         return msg
     
-    def _send(self, ptp_msg, EP):
+    def _send(self, ptp_msg, EP = None, event = False):
         """Helper method for sending data
         
         Args:
         - ptp_msg (bytes): encoded message to be sent
         - EP : endpoint used for sending the message
         """
+
+        if not EP:
+            EP = self.__intep if event else self.__outep
         
         try:
             sent = 0
