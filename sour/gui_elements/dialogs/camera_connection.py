@@ -1,7 +1,7 @@
 from PyQt5 import QtWidgets, QtCore
 
-from sour.usb_connection import find_usb_cameras
-from sour.sony import SONYconn
+from sour_core.usb_connection import find_usb_cameras
+from sour_core.sony import SONYconn
 import usb
 
 
